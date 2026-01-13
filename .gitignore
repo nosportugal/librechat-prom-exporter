@@ -1,3 +1,9 @@
+# Temporary files
+temp/
+
+# Virtual environment directories
+venv/
+
 # Logs
 logs
 *.log

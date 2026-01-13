@@ -5,6 +5,7 @@ import 'dotenv/config';
 import { updateMetrics } from './metrics';
 import { basicGauges } from './metrics/basicMetrics';
 import { advancedGauges } from './metrics/advancedMetrics';
+import { categoryGauges } from './metrics/categoryMetrics';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -21,6 +22,11 @@ for (const gauge of Object.values(basicGauges)) {
 
 // Register advanced gauges.
 for (const gauge of Object.values(advancedGauges)) {
+    register.registerMetric(gauge);
+}
+
+// Register category gauges.
+for (const gauge of Object.values(categoryGauges)) {
     register.registerMetric(gauge);
 }
 
