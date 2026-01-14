@@ -31,14 +31,16 @@ for (const gauge of Object.values(categoryGauges)) {
 }
 
 // Connect to MongoDB (adjust the URI as needed)
-const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/librechat';
-mongoose
-    .connect(mongoURI)
-    .then(() => console.log('Connected to MongoDB'))
-    .catch((error: Error) => {
-        console.error('MongoDB connection error:', error);
-        process.exit(1);
-    });
+if (!process.env.LOCAL_CONVERSATIONS_CSV) {
+    const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/librechat';
+    mongoose
+        .connect(mongoURI)
+        .then(() => console.log('Connected to MongoDB'))
+        .catch((error: Error) => {
+            console.error('MongoDB connection error:', error);
+            process.exit(1);
+        });
+}
 
 // Schedule metric updates every 30 seconds or defined as variable.
 setInterval(updateMetrics, refreshInterval);

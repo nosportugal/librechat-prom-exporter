@@ -3,6 +3,7 @@ import { GoogleGenAI } from '@google/genai';
 import { Conversation } from '../models';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 
 // Cache file path for persisting category classifications
 // The model name is appended as a suffix to separate caches per model
@@ -308,9 +309,84 @@ async function classifyConversationsBatch(
         if (i + batchSize < conversations.length) {
             await new Promise(resolve => setTimeout(resolve, delayMs));
         }
+
+        console.log(`Classified batch ${i / batchSize + 1} / ${Math.ceil(conversations.length / batchSize)}`);
     }
 
     return results;
+}
+
+/**
+ * Load conversations from a local CSV file.
+ * Expected CSV format: _id,title (with header row)
+ */
+async function loadConversationsFromCSV(csvPath: string): Promise<Array<{ _id: string; title: string }>> {
+    const conversations: Array<{ _id: string; title: string }> = [];
+    const resolvedPath = path.resolve(csvPath);
+
+    if (!fs.existsSync(resolvedPath)) {
+        throw new Error(`CSV file not found: ${resolvedPath}`);
+    }
+
+    const fileStream = fs.createReadStream(resolvedPath);
+    const rl = readline.createInterface({
+        input: fileStream,
+        crlfDelay: Infinity,
+    });
+
+    let isFirstLine = true;
+    let idIndex = 0;
+    let titleIndex = 1;
+
+    for await (const line of rl) {
+        if (!line.trim()) continue;
+
+        // Parse CSV line (handle quoted fields with commas)
+        const fields: string[] = [];
+        let currentField = '';
+        let inQuotes = false;
+
+        for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+                if (inQuotes && line[i + 1] === '"') {
+                    // Escaped quote
+                    currentField += '"';
+                    i++;
+                } else {
+                    inQuotes = !inQuotes;
+                }
+            } else if (char === ',' && !inQuotes) {
+                fields.push(currentField.trim());
+                currentField = '';
+            } else {
+                currentField += char;
+            }
+        }
+        fields.push(currentField.trim());
+
+        if (isFirstLine) {
+            // Parse header to find column indices
+            const lowerFields = fields.map(f => f.toLowerCase().replace(/^["']|["']$/g, ''));
+            const foundIdIndex = lowerFields.findIndex(f => f === '_id' || f === 'id');
+            const foundTitleIndex = lowerFields.findIndex(f => f === 'title');
+
+            if (foundIdIndex !== -1) idIndex = foundIdIndex;
+            if (foundTitleIndex !== -1) titleIndex = foundTitleIndex;
+
+            isFirstLine = false;
+            continue;
+        }
+
+        const _id = fields[idIndex]?.replace(/^["']|["']$/g, '');
+        const title = fields[titleIndex]?.replace(/^["']|["']$/g, '');
+
+        if (_id && title) {
+            conversations.push({ _id, title });
+        }
+    }
+
+    return conversations;
 }
 
 /**
@@ -319,19 +395,30 @@ async function classifyConversationsBatch(
 export async function updateCategoryMetrics(): Promise<void> {
     try {
         // Check if GenAI is configured (either API key or Vertex AI project)
-        const projectId = process.env.VERTEX_AI_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!projectId && !apiKey) {
-            console.log('Skipping category metrics: Neither GEMINI_API_KEY nor VERTEX_AI_PROJECT_ID configured');
-            return;
-        }
+        const projectId = process.env.VERTEX_AI_PROJECT_ID;
 
-        // TODO: paginate if there are many conversations and use updatedAt to limit to recent ones
-        // Fetch conversations with titles
-        const conversations = await Conversation.find(
-            { title: { $exists: true, $nin: [null, ''] } },
-            { _id: 1, title: 1 },
-        ).lean() as Array<{ _id: { toString(): string }; title: string }>;
+        // Load conversations from CSV file or MongoDB
+        const localCsvPath = process.env.LOCAL_CONVERSATIONS_CSV;
+        let conversations: Array<{ _id: string; title: string }>;
+
+        if (localCsvPath) {
+            // Load from local CSV file
+            console.log(`Loading conversations from CSV file: ${localCsvPath}`);
+            conversations = await loadConversationsFromCSV(localCsvPath);
+            console.log(`Loaded ${conversations.length} conversations from CSV`);
+        } else {
+            // TODO: paginate if there are many conversations and use updatedAt to limit to recent ones
+            // Fetch conversations with titles from MongoDB
+            const mongoConversations = await Conversation.find(
+                { title: { $exists: true, $nin: [null, ''] } },
+                { _id: 1, title: 1 },
+            ).lean() as Array<{ _id: { toString(): string }; title: string }>;
+
+            conversations = mongoConversations.map(c => ({
+                _id: c._id.toString(),
+                title: c.title,
+            }));
+        }
 
         if (conversations.length === 0) {
             console.log('No conversations found for category classification');
@@ -340,7 +427,7 @@ export async function updateCategoryMetrics(): Promise<void> {
 
         // Filter to only process new conversations (not in cache)
         const uncachedConversations = conversations.filter(
-            (conv: { _id: { toString(): string }; title: string }) => !categoryCache.has(conv._id.toString()),
+            conv => !categoryCache.has(conv._id),
         );
 
         console.log(`Classifying ${uncachedConversations.length} new conversations (${categoryCache.size} cached)`);
@@ -351,15 +438,8 @@ export async function updateCategoryMetrics(): Promise<void> {
             const batchSize = parseInt(process.env.CATEGORY_BATCH_SIZE || '10');
             const delayMs = parseInt(process.env.CATEGORY_BATCH_DELAY_MS || '100');
 
-            const conversationsToClassify = uncachedConversations.map(
-                (c: { _id: { toString(): string }; title: string }) => ({
-                    _id: c._id.toString(),
-                    title: c.title,
-                }),
-            );
-
             const newClassifications = await classifyConversationsBatch(
-                conversationsToClassify,
+                uncachedConversations,
                 batchSize,
                 delayMs,
             );
@@ -378,7 +458,7 @@ export async function updateCategoryMetrics(): Promise<void> {
         const primaryCounts: Map<string, number> = new Map();
 
         for (const conv of conversations) {
-            const category = categoryCache.get(conv._id.toString());
+            const category = categoryCache.get(conv._id);
             if (category) {
                 const key = `${category.primary}|${category.subType}`;
                 categoryCounts.set(key, (categoryCounts.get(key) || 0) + 1);
