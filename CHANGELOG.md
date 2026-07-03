@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-user balance metric** `librechat_balance_credits_by_user{id}` (gated by `EMIT_PER_USER_METRICS`, cardinality tier) — each user's current balance in raw `tokenCredits`. Users without a balance record emit no series; a user with a zero-credit record emits `0`.
+- **Per-domain balance metric** `librechat_balance_credits_by_email_domain{email_domain}` (always-on, advanced tier) — total outstanding `tokenCredits` summed per user email domain.
+- **`librechat-balance-dashboard.json`** — a dedicated Grafana dashboard for balances (records, total / average outstanding credits, credits by domain, top users), documented on the [Grafana dashboard](https://rubentalstra.github.io/librechat-prom-exporter/docs/dashboard) page.
+
 ## [0.10.0] - 2026-05-22
 
 ### Added

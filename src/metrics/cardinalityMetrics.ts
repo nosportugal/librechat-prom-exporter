@@ -1,7 +1,7 @@
 import client from "prom-client";
 
 import { getConfig } from "../config.js";
-import { Agent, Message, Transaction, User } from "../models/index.js";
+import { Agent, Balance, Message, Transaction, User } from "../models/index.js";
 
 import { deriveUserLabel } from "./util.js";
 
@@ -56,12 +56,22 @@ export const cardinalityGauges = {
     help: "Usage count for each agent grouped by user (id = Mongo _id by default, email when ANONYMIZE_EMAIL_LABEL=false, or HMAC-SHA256 hex when METRICS_USER_ID_SALT is set)",
     labelNames: ["agent", "id"],
   }),
+
+  // Current balance (raw tokenCredits) per user. Only users with a Balance
+  // document produce a series; a user with a document but zero credits emits
+  // 0, while a user with no document at all produces no series.
+  balanceCreditsByUser: new client.Gauge({
+    name: "librechat_balance_credits_by_user",
+    help: "Current balance in raw tokenCredits per user (1e6 tokenCredits = $1 USD; id = Mongo _id by default, email when ANONYMIZE_EMAIL_LABEL=false, or HMAC-SHA256 hex when METRICS_USER_ID_SALT is set)",
+    labelNames: ["id"],
+  }),
 };
 
 function resetAll(): void {
   cardinalityGauges.transactionCostByUser.reset();
   cardinalityGauges.transactionTokenSumByModelUser.reset();
   cardinalityGauges.agentUsageByUserCount.reset();
+  cardinalityGauges.balanceCreditsByUser.reset();
 }
 
 export async function updateCardinalityMetrics(): Promise<void> {
@@ -151,7 +161,19 @@ export async function updateCardinalityMetrics(): Promise<void> {
     { allowDiskUse: true },
   );
 
-  const [transactionAgg, agentUsageByUserAgg] = await Promise.all([transactionAggPromise, agentUsageByUserAggPromise]);
+  // --- Balance-derived: current tokenCredits per user ---
+  // A single lean read of the (small, one-doc-per-user) balances collection.
+  // Users without a Balance document are naturally absent from the result.
+  const balanceDocsPromise: Promise<Array<{ user: unknown; tokenCredits?: number | null }>> = Balance.find(
+    {},
+    { user: 1, tokenCredits: 1 },
+  ).lean();
+
+  const [transactionAgg, agentUsageByUserAgg, balanceDocs] = await Promise.all([
+    transactionAggPromise,
+    agentUsageByUserAggPromise,
+    balanceDocsPromise,
+  ]);
 
   const byUser = transactionAgg[0]?.byUser || [];
   const byModelUser = transactionAgg[0]?.byModelUser || [];
@@ -190,5 +212,9 @@ export async function updateCardinalityMetrics(): Promise<void> {
       continue;
     }
     cardinalityGauges.agentUsageByUserCount.set({ agent, id: labelFor(String(row._id.user)) }, row.count);
+  }
+
+  for (const row of balanceDocs) {
+    cardinalityGauges.balanceCreditsByUser.set({ id: labelFor(String(row.user)) }, row.tokenCredits ?? 0);
   }
 }
