@@ -50,6 +50,18 @@ export const cardinalityGauges = {
     labelNames: ["model", "tokenType", "id"],
   }),
 
+  // Sum of tokens (absolute rawAmount) per user, with model/tokenType
+  // collapsed away. Low-cardinality companion to transactionTokenSumByModelUser
+  // (one series per user instead of per user*model*tokenType) — use this one
+  // whenever only the per-user total is needed, since aggregating the
+  // model/tokenType-crossed metric at query time is expensive at high user
+  // counts.
+  transactionTokenSumByUser: new client.Gauge({
+    name: "librechat_transaction_token_sum_by_user",
+    help: "Sum of tokens (absolute rawAmount) per user, across all models/tokenTypes (id = Mongo _id by default, email when ANONYMIZE_EMAIL_LABEL=false, or HMAC-SHA256 hex when METRICS_USER_ID_SALT is set)",
+    labelNames: ["id"],
+  }),
+
   // Agent usage count per (agent, user) pair.
   agentUsageByUserCount: new client.Gauge({
     name: "librechat_agent_usage_by_user_count",
@@ -70,6 +82,7 @@ export const cardinalityGauges = {
 function resetAll(): void {
   cardinalityGauges.transactionCostByUser.reset();
   cardinalityGauges.transactionTokenSumByModelUser.reset();
+  cardinalityGauges.transactionTokenSumByUser.reset();
   cardinalityGauges.agentUsageByUserCount.reset();
   cardinalityGauges.balanceCreditsByUser.reset();
 }
@@ -107,6 +120,7 @@ export async function updateCardinalityMetrics(): Promise<void> {
         _id: { model: string; user: unknown; tokenType: string };
         tokens: number;
       }>;
+      byUserTokens: Array<{ _id: unknown; tokens: number }>;
     }>
   > = Transaction.aggregate(
     [
@@ -136,6 +150,7 @@ export async function updateCardinalityMetrics(): Promise<void> {
               },
             },
           ],
+          byUserTokens: [{ $group: { _id: "$user", tokens: { $sum: { $abs: "$rawAmount" } } } }],
         },
       },
     ],
@@ -177,6 +192,7 @@ export async function updateCardinalityMetrics(): Promise<void> {
 
   const byUser = transactionAgg[0]?.byUser || [];
   const byModelUser = transactionAgg[0]?.byModelUser || [];
+  const byUserTokens = transactionAgg[0]?.byUserTokens || [];
 
   // Look up display names for the agents present in the result so labels
   // match what the advanced tier emits for `librechat_agent_usage_count`.
@@ -197,6 +213,10 @@ export async function updateCardinalityMetrics(): Promise<void> {
 
   for (const row of byUser) {
     cardinalityGauges.transactionCostByUser.set({ id: labelFor(String(row._id)) }, row.cost);
+  }
+
+  for (const row of byUserTokens) {
+    cardinalityGauges.transactionTokenSumByUser.set({ id: labelFor(String(row._id)) }, row.tokens);
   }
 
   for (const row of byModelUser) {

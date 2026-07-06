@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { resetConfigForTests } from "../config.js";
-import { Balance } from "../models/index.js";
+import { Balance, Transaction } from "../models/index.js";
 
 import { cardinalityGauges, updateCardinalityMetrics } from "./cardinalityMetrics.js";
 
@@ -21,7 +21,9 @@ afterAll(async () => {
 
 afterEach(async () => {
   await Balance.deleteMany({});
+  await Transaction.deleteMany({});
   cardinalityGauges.balanceCreditsByUser.reset();
+  cardinalityGauges.transactionTokenSumByUser.reset();
   delete process.env.EMIT_PER_USER_METRICS;
   delete process.env.ANONYMIZE_EMAIL_LABEL;
   delete process.env.METRICS_USER_ID_SALT;
@@ -30,6 +32,11 @@ afterEach(async () => {
 
 async function balanceSeries(): Promise<Map<string, number>> {
   const snapshot = await cardinalityGauges.balanceCreditsByUser.get();
+  return new Map(snapshot.values.map((v) => [String(v.labels.id), v.value]));
+}
+
+async function tokenSumByUserSeries(): Promise<Map<string, number>> {
+  const snapshot = await cardinalityGauges.transactionTokenSumByUser.get();
   return new Map(snapshot.values.map((v) => [String(v.labels.id), v.value]));
 }
 
@@ -83,5 +90,44 @@ describe("updateCardinalityMetrics — balanceCreditsByUser", () => {
     expect(String(only.labels.id)).toMatch(/^[a-f0-9]{16}$/);
     expect(String(only.labels.id)).not.toBe(String(user));
     expect(only.value).toBe(777);
+  });
+});
+
+describe("updateCardinalityMetrics — transactionTokenSumByUser", () => {
+  it("sums abs(rawAmount) per user across models/tokenTypes, omitting users with no transactions", async () => {
+    const alice = new mongoose.Types.ObjectId();
+    const bob = new mongoose.Types.ObjectId();
+    const carol = new mongoose.Types.ObjectId(); // no transactions
+    await Transaction.create([
+      { user: alice, tokenType: "prompt", model: "gpt-4", rawAmount: -100 },
+      { user: alice, tokenType: "completion", model: "gpt-4", rawAmount: -50 },
+      { user: alice, tokenType: "prompt", model: "claude", rawAmount: -25 },
+      { user: bob, tokenType: "prompt", model: "gpt-4", rawAmount: -10 },
+    ]);
+
+    process.env.EMIT_PER_USER_METRICS = "true";
+    resetConfigForTests();
+
+    await updateCardinalityMetrics();
+
+    const series = await tokenSumByUserSeries();
+    expect(series.size).toBe(2);
+    expect(series.get(String(alice))).toBe(175);
+    expect(series.get(String(bob))).toBe(10);
+    expect(series.has(String(carol))).toBe(false);
+  });
+
+  it("emits no per-user token sum series when EMIT_PER_USER_METRICS is disabled", async () => {
+    await Transaction.create([
+      { user: new mongoose.Types.ObjectId(), tokenType: "prompt", model: "gpt-4", rawAmount: -100 },
+    ]);
+
+    process.env.EMIT_PER_USER_METRICS = "false";
+    resetConfigForTests();
+
+    await updateCardinalityMetrics();
+
+    const series = await tokenSumByUserSeries();
+    expect(series.size).toBe(0);
   });
 });

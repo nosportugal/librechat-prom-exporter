@@ -101,6 +101,7 @@ Source: `src/metrics/advancedMetrics.ts`. ~60 metrics grouped here.
 | **High-cardinality (gated)**                            |       |                                      |                                                                                                                                         |
 | `librechat_transaction_cost_by_user`                    | gauge | `id`                                 | Only emitted when `EMIT_PER_USER_METRICS=true`. `id` is the user's Mongo `_id` by default, or email when `ANONYMIZE_EMAIL_LABEL=false`. |
 | `librechat_transaction_token_sum_by_model_user`         | gauge | `model`, `tokenType`, `id`           | Same gate and same `id`-label semantics.                                                                                                |
+| `librechat_transaction_token_sum_by_user`               | gauge | `id`                                 | Sum of tokens per user across all models/tokenTypes (one series per user). Low-cardinality companion to `_by_model_user` — prefer this one for per-user totals/rankings at high user counts. Same gate and `id`-label semantics. |
 | `librechat_balance_credits_by_user`                     | gauge | `id`                                 | Current balance in raw tokenCredits per user. Same gate and same `id`-label semantics. Users without a balance record emit no series.   |
 
 ### Agents / assistants / tools
